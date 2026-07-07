@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8606720265:AAGDZJhk_uW7RT3SdTBzRXuuz93eD7RU65Q")
 DATABASE_URL = os.getenv("DATABASE_URL")
 # Convert Railway postgres URL to psycopg2-compatible format
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+if DATABASE_URL and (DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")):
     DB_URL = DATABASE_URL.replace("postgres://", "postgresql://")
     # Ensure SSL mode
     if "sslmode" not in DB_URL:
@@ -213,7 +213,7 @@ LANGUAGES = {
 #  DATABASE HELPERS
 # ────────────────────────────────────────────────
 
-def save_users():
+def save_users(user_id: str = None):
     if not IS_POSTGRES:
         try:
             with open(USERS_FILE, "w", encoding="utf-8") as f:
@@ -223,9 +223,14 @@ def save_users():
     else:
         try:
             import psycopg2
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = psycopg2.connect(DB_URL)
             cur = conn.cursor()
-            for user_id, data in list(users.items()):
+            # Determine which users to sync: only provided user_id or all users
+            if user_id and user_id in users:
+                user_items = [(user_id, users[user_id])]
+            else:
+                user_items = list(users.items())
+            for uid, data in user_items:
                 cur.execute(
                     """
                     INSERT INTO users (user_id, coins, last_daily, lang, first_name, stats, registered_at)
@@ -237,7 +242,7 @@ def save_users():
                         first_name = EXCLUDED.first_name,
                         stats = EXCLUDED.stats;
                     """,
-                    (user_id, data["coins"], data["last_daily"], data["lang"],
+                    (uid, data["coins"], data["last_daily"], data["lang"],
                      data["first_name"], json.dumps(data["stats"]), data.get("registered_at"))
                 )
             conn.commit()
@@ -263,7 +268,7 @@ def get_user(user_id: str, first_name: str = None):
         if IS_POSTGRES:
             try:
                 import psycopg2
-                conn = psycopg2.connect(DATABASE_URL)
+                conn = psycopg2.connect(DB_URL)
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT coins, last_daily, lang, first_name, stats, registered_at FROM users WHERE user_id = %s",
@@ -312,7 +317,7 @@ def get_leaderboard_data(limit=10):
         return list(top)
     try:
         import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
         cur.execute(
             "SELECT user_id, coins, last_daily, lang, first_name, stats, registered_at "
@@ -876,13 +881,60 @@ async def button_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if active:
         gtype = active.get("game")
         if gtype == "crash" and data != "crash_cashout":
-            await query.answer("Finish your Crash game first! 🚀", show_alert=True)
+            try:
+                await query.answer("Finish your Crash game first! 🚀", show_alert=True)
+            except Exception:
+                pass
             return
         if gtype == "blackjack" and data not in ("bj_hit", "bj_stand"):
-            await query.answer("Finish your Blackjack game first! 🃏", show_alert=True)
+            try:
+                await query.answer("Finish your Blackjack game first! 🃏", show_alert=True)
+            except Exception:
+                pass
             return
 
-    await query.answer()  # always ack immediately to avoid "loading" spinner
+    # Determine if we should defer answering because we will show custom text or show_alert
+    defer_answer = False
+    if data == "crash_cashout":
+        defer_answer = True
+    elif data == "menu_wheel":
+        user = get_user(uid)
+        last = user.get("last_daily")
+        if last:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            try:
+                last_dt = datetime.fromisoformat(last)
+                if now - last_dt < timedelta(hours=24):
+                    defer_answer = True
+            except Exception:
+                pass
+    elif data.startswith("play_"):
+        parts = data.split("_")
+        if len(parts) >= 3:
+            amt = parts[2]
+            user = get_user(uid)
+            try:
+                bet = user["coins"] if amt == "allin" else int(amt)
+                if bet <= 0 or bet > user["coins"]:
+                    defer_answer = True
+            except Exception:
+                pass
+    elif data.startswith("choice_"):
+        parts = data.split("_")
+        if len(parts) >= 4:
+            try:
+                bet = int(parts[2])
+                user = get_user(uid)
+                if bet <= 0 or bet > user["coins"]:
+                    defer_answer = True
+            except Exception:
+                pass
+
+    if not defer_answer:
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
     # ── Navigation ──
     if data == "menu_main":
