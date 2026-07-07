@@ -21,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8606720265:AAGDZJhk_uW7RT3SdTBzRXuuz93eD7RU65Q")
 DATABASE_URL = os.getenv("DATABASE_URL")
+# Convert Railway postgres URL to psycopg2-compatible format
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DB_URL = DATABASE_URL.replace("postgres://", "postgresql://")
+    # Ensure SSL mode
+    if "sslmode" not in DB_URL:
+        sep = "?" if "?" not in DB_URL else "&"
+        DB_URL = f"{DB_URL}{sep}sslmode=require"
+else:
+    DB_URL = DATABASE_URL
 
 # Paths
 DATA_DIR = Path(__file__).parent / "data"
@@ -33,7 +42,7 @@ def init_db():
         return False
     try:
         import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = psycopg2.connect(DB_URL)
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -49,10 +58,10 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        logger.info("PostgreSQL initialized successfully.")
+        logger.info("PostgreSQL database initialized successfully.")
         return True
     except Exception as e:
-        logger.error(f"PostgreSQL failed: {e}. Using JSON fallback.")
+        logger.error(f"PostgreSQL connection failed: {e}. Falling back to JSON fallback.")
         return False
 
 IS_POSTGRES = init_db()
